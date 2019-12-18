@@ -230,6 +230,7 @@ class DCATJSONHarvester(DCATHarvester):
             existing_dataset = self._get_existing_dataset(harvest_object.guid)
             if existing_dataset:
                 copy_across_resource_ids(existing_dataset, package_dict)
+                copy_across_dataset_groups(existing_dataset, package_dict)
 
         # Allow custom harvesters to modify the package dict before creating
         # or updating the package
@@ -343,3 +344,12 @@ def copy_across_resource_ids(existing_dataset, harvested_dataset):
                     matching_existing_resource)
         if not existing_resources_still_to_match:
             break
+
+
+def copy_across_dataset_groups(existing_dataset, harvested_dataset):
+    '''Copies the groups any existing datasets
+    are in to the newly harvested datasets'''
+    existing_groups = existing_dataset.get('groups')
+
+    if existing_groups:
+        harvested_dataset['groups'] = existing_groups
