@@ -8,7 +8,9 @@ import ckantoolkit.tests.helpers as h
 
 import ckan.tests.factories as factories
 
-from ckanext.dcat.harvesters._json import copy_across_resource_ids, DCATJSONHarvester
+from ckanext.dcat.harvesters._json import (copy_across_resource_ids,
+                                           DCATJSONHarvester,
+                                           copy_across_dataset_groups)
 from test_harvester import FunctionalHarvestTest
 
 eq_ = nose.tools.eq_
@@ -323,3 +325,31 @@ class TestImportStage:
 
         assert 'Error importing dataset Invalid tags: ValidationError(None,)' in args[0]
         assert '{\'tags\': [{}, u\'Tag "test\\\'s" must be alphanumeric characters or symbols: -_.\', u\'Tag "invalid & wrong" must be alphanumeric characters or symbols: -_.\']}' in args[0]
+
+
+class TestCopyAcrossDatasetGroups:
+    def test_groups_copied(self):
+        harvested_dataset = {}
+        existing_dataset = {'groups': [{
+            'display_name': u'education',
+            u'description': u'',
+            u'title': u'education',
+            'image_display_url': u'',
+            u'id': u'ed944b74-6338-4cbd-83df-0927ff8ae8ab',
+            u'name': u'education'
+        }, {
+            'display_name': u'other',
+            u'description': u'',
+            u'title': u'other',
+            'image_display_url': u'',
+            u'id': u'95291d78-7c33-48e6-bd06-5751254e5bf7',
+            u'name': u'other'}]
+        }
+
+        copy_across_dataset_groups(
+            existing_dataset,
+            harvested_dataset,
+        )
+
+        eq_(harvested_dataset['groups'][0].get('name'),
+            existing_dataset['groups'][0].get('name'))
