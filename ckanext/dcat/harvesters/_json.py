@@ -231,6 +231,7 @@ class DCATJSONHarvester(DCATHarvester):
             if existing_dataset:
                 copy_across_resource_ids(existing_dataset, package_dict)
                 copy_across_dataset_groups(existing_dataset, package_dict)
+                copy_across_dataset_tayside_elements(existing_dataset, package_dict)
 
         # Allow custom harvesters to modify the package dict before creating
         # or updating the package
@@ -353,3 +354,11 @@ def copy_across_dataset_groups(existing_dataset, harvested_dataset):
 
     if existing_groups:
         harvested_dataset['groups'] = existing_groups
+
+def copy_across_dataset_tayside_elements(existing_dataset, harvested_dataset):
+    '''Copies the tayside elements any existing datasets
+    have to the newly harvested datasets'''
+    existing_frequency = existing_dataset.get('frequency')
+
+    if existing_frequency:
+        harvested_dataset.update({'frequency':existing_frequency})
