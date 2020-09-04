@@ -193,9 +193,10 @@ class DCATJSONHarvester(DCATHarvester):
                 context, {'id': harvest_object.package_id})
             log.info('Deleted package {0} with guid {1}'
                      .format(harvest_object.package_id, harvest_object.guid))
-            
+
             model.Session.query(HarvestObject).\
-                filter_by(guid=guid).\
+                filter_by(guid=harvest_object.guid).\
+                filter_by(current=True).\
                 update({'current': False}, False)
 
             return True
