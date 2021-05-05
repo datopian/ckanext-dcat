@@ -5,6 +5,7 @@ import logging
 import ckan.plugins as p
 import ckan.model as model
 import ckan.logic as logic
+from ckan.common import config
 
 from ckanext.harvest.model import HarvestObject, HarvestObjectExtra
 
@@ -161,8 +162,13 @@ class DCATRDFHarvester(DCATHarvester):
                 return False
 
         rdf_format = None
+        rdf_profile_config = None
+
         if harvest_job.source.config:
             rdf_format = json.loads(harvest_job.source.config).get("rdf_format")
+            rdf_profile_config = json.loads(harvest_job.source.config).get("rdf_profile")
+
+        rdf_profiles_list = config.get('ckanext.dcat.rdf.profiles',None)
         content, rdf_format = self._get_content_and_type(url, harvest_job, 1, content_type=rdf_format)
 
         # TODO: store content?
@@ -174,9 +180,15 @@ class DCATRDFHarvester(DCATHarvester):
 
         if not content:
             return False
-
+        # Workaround for choosing rdf profile through config.
+        # The latest added profile is running as the default profile
+        rdf_profile_list = rdf_profiles_list.split(" ")
+        if rdf_profile_config in rdf_profile_list:
+            rdf_profile_list = [profile for profile in rdf_profile_list
+                if profile != rdf_profile_config]
+            rdf_profile_list.append(rdf_profile_config)
         # TODO: profiles conf
-        parser = RDFParser()
+        parser = RDFParser(profiles=rdf_profile_list)
 
         try:
             parser.parse(content, _format=rdf_format)
