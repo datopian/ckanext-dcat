@@ -1,6 +1,9 @@
-import nose
+from builtins import str
+from builtins import object
 
-from pylons import config
+import pytest
+
+from ckantoolkit import config
 
 from rdflib import Graph, URIRef, Literal
 from rdflib.namespace import Namespace, RDF
@@ -17,8 +20,6 @@ from ckanext.dcat.profiles import RDFProfile
 
 DCT = Namespace("http://purl.org/dc/terms/")
 DCAT = Namespace("http://www.w3.org/ns/dcat#")
-
-eq_ = nose.tools.eq_
 
 
 def _default_graph():
@@ -76,7 +77,7 @@ class TestRDFParser(object):
 
         p = RDFParser()
 
-        eq_(sorted([pr.name for pr in p._profiles]),
+        assert (sorted([pr.name for pr in p._profiles]) ==
             sorted(DEFAULT_RDF_PROFILES))
 
     def test_profiles_via_config_option(self):
@@ -88,7 +89,7 @@ class TestRDFParser(object):
             RDFParser()
         except RDFProfileException as e:
 
-            eq_(str(e), 'Unknown RDF profiles: profile_conf_1, profile_conf_2')
+            assert str(e), 'Unknown RDF profiles: profile_conf_1 == profile_conf_2'
 
         config.clear()
         config.update(original_config)
@@ -98,14 +99,14 @@ class TestRDFParser(object):
             RDFParser(profiles=[])
         except RDFProfileException as e:
 
-            eq_(str(e), 'No suitable RDF profiles could be loaded')
+            assert str(e) == 'No suitable RDF profiles could be loaded'
 
     def test_profile_not_found(self):
         try:
             RDFParser(profiles=['not_found'])
         except RDFProfileException as e:
 
-            eq_(str(e), 'Unknown RDF profiles: not_found')
+            assert str(e) == 'Unknown RDF profiles: not_found'
 
     def test_profiles_are_called_on_datasets(self):
 
@@ -133,11 +134,75 @@ class TestRDFParser(object):
 
         p = RDFParser()
 
-        eq_(len(p.g), 0)
+        assert len(p.g) == 0
 
         p.parse(data)
 
-        eq_(len(p.g), 2)
+        assert len(p.g) == 2
+
+    def test_parse_pagination_next_page(self):
+
+        data = '''<?xml version="1.0" encoding="utf-8" ?>
+        <rdf:RDF
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xmlns:hydra="http://www.w3.org/ns/hydra/core#">
+         <hydra:PagedCollection rdf:about="http://example.com/catalog.xml?page=1">
+            <hydra:totalItems rdf:datatype="http://www.w3.org/2001/XMLSchema#integer">245</hydra:totalItems>
+            <hydra:lastPage>http://example.com/catalog.xml?page=3</hydra:lastPage>
+            <hydra:itemsPerPage rdf:datatype="http://www.w3.org/2001/XMLSchema#integer">100</hydra:itemsPerPage>
+            <hydra:nextPage>http://example.com/catalog.xml?page=2</hydra:nextPage>
+            <hydra:firstPage>http://example.com/catalog.xml?page=1</hydra:firstPage>
+        </hydra:PagedCollection>
+        </rdf:RDF>
+        '''
+
+        p = RDFParser()
+
+        p.parse(data)
+
+        assert p.next_page() == 'http://example.com/catalog.xml?page=2'
+
+    def test_parse_without_pagination(self):
+
+        data = '''<?xml version="1.0" encoding="utf-8" ?>
+        <rdf:RDF
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+        <rdfs:SomeClass rdf:about="http://example.org">
+            <rdfs:label>Some label</rdfs:label>
+        </rdfs:SomeClass>
+        </rdf:RDF>
+        '''
+
+        p = RDFParser()
+
+        p.parse(data)
+
+        assert p.next_page() == None
+
+    def test_parse_pagination_last_page(self):
+
+        data = '''<?xml version="1.0" encoding="utf-8" ?>
+        <rdf:RDF
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xmlns:hydra="http://www.w3.org/ns/hydra/core#">
+         <hydra:PagedCollection rdf:about="http://example.com/catalog.xml?page=3">
+            <hydra:totalItems rdf:datatype="http://www.w3.org/2001/XMLSchema#integer">245</hydra:totalItems>
+            <hydra:lastPage>http://example.com/catalog.xml?page=3</hydra:lastPage>
+            <hydra:itemsPerPage rdf:datatype="http://www.w3.org/2001/XMLSchema#integer">100</hydra:itemsPerPage>
+            <hydra:firstPage>http://example.com/catalog.xml?page=1</hydra:firstPage>
+            <hydra:previousPage>http://example.com/catalog.xml?page=2</hydra:previousPage>
+        </hydra:PagedCollection>
+        </rdf:RDF>
+        '''
+
+        p = RDFParser()
+
+        p.parse(data)
+
+        assert p.next_page() == None
 
     def test_parse_data_different_format(self):
 
@@ -151,11 +216,11 @@ class TestRDFParser(object):
 
         p = RDFParser()
 
-        eq_(len(p.g), 0)
+        assert len(p.g) == 0
 
         p.parse(data, _format='n3')
 
-        eq_(len(p.g), 2)
+        assert len(p.g) == 2
 
     def test_parse_data_raises_on_parse_error(self):
 
@@ -163,12 +228,14 @@ class TestRDFParser(object):
 
         data = 'Wrong data'
 
-        nose.tools.assert_raises(RDFParserException, p.parse, '')
+        with pytest.raises(RDFParserException):
+            p.parse('')
 
-        nose.tools.assert_raises(RDFParserException, p.parse, data)
+        with pytest.raises(RDFParserException):
+            p.parse(data)
 
-        nose.tools.assert_raises(RDFParserException, p.parse, data,
-                                 _format='n3',)
+        with pytest.raises(RDFParserException):
+            p.parse(data, _format='n3')
 
     def test__datasets(self):
 
@@ -176,7 +243,7 @@ class TestRDFParser(object):
 
         p.g = _default_graph()
 
-        eq_(len([d for d in p._datasets()]), 3)
+        assert len([d for d in p._datasets()]) == 3
 
     def test__datasets_none_found(self):
 
@@ -184,7 +251,7 @@ class TestRDFParser(object):
 
         p.g = Graph()
 
-        eq_(len([d for d in p._datasets()]), 0)
+        assert len([d for d in p._datasets()]) == 0
 
     def test_datasets(self):
 
@@ -199,7 +266,7 @@ class TestRDFParser(object):
 
             datasets.append(dataset)
 
-        eq_(len(datasets), 3)
+        assert len(datasets) == 3
 
     def test_datasets_none_found(self):
 
@@ -207,4 +274,4 @@ class TestRDFParser(object):
 
         p.g = Graph()
 
-        eq_(len([d for d in p.datasets()]), 0)
+        assert len([d for d in p.datasets()]) == 0

@@ -1,10 +1,14 @@
+from __future__ import print_function
+
+from builtins import str
+from builtins import object
 import sys
 import argparse
 import xml
 import json
 from pkg_resources import iter_entry_points
 
-from pylons import config
+from ckantoolkit import config
 
 import rdflib
 import rdflib.parser
@@ -13,8 +17,9 @@ from rdflib.namespace import Namespace, RDF
 
 import ckan.plugins as p
 
-from ckanext.dcat.utils import catalog_uri, dataset_uri, url_to_rdflib_format
-
+from ckanext.dcat.utils import catalog_uri, dataset_uri, url_to_rdflib_format, DCAT_EXPOSE_SUBCATALOGS
+from ckanext.dcat.profiles import DCAT, DCT, FOAF
+from ckanext.dcat.exceptions import RDFProfileException, RDFParserException
 
 HYDRA = Namespace('http://www.w3.org/ns/hydra/core#')
 DCAT = Namespace("http://www.w3.org/ns/dcat#")
@@ -25,13 +30,6 @@ COMPAT_MODE_CONFIG_OPTION = 'ckanext.dcat.compatibility_mode'
 
 DEFAULT_RDF_PROFILES = ['euro_dcat_ap']
 
-
-class RDFParserException(Exception):
-    pass
-
-
-class RDFProfileException(Exception):
-    pass
 
 
 class RDFProcessor(object):
@@ -64,7 +62,7 @@ class RDFProcessor(object):
                 config.get(COMPAT_MODE_CONFIG_OPTION, False))
         self.compatibility_mode = compatibility_mode
 
-        self.g = rdflib.Graph()
+        self.g = rdflib.ConjunctiveGraph()
 
     def _load_profiles(self, profile_names):
         '''
@@ -114,6 +112,16 @@ class RDFParser(RDFProcessor):
         for dataset in self.g.subjects(RDF.type, DCAT.Dataset):
             yield dataset
 
+    def next_page(self):
+        '''
+        Returns the URL of the next page or None if there is no next page
+        '''
+        for pagination_node in self.g.subjects(RDF.type, HYDRA.PagedCollection):
+            for o in self.g.objects(pagination_node, HYDRA.nextPage):
+                return str(o)
+        return None
+
+
     def parse(self, data, _format=None):
         '''
         Parses and RDF graph serialization and into the class graph
@@ -131,7 +139,7 @@ class RDFParser(RDFProcessor):
         '''
 
         _format = url_to_rdflib_format(_format)
-        if _format == 'pretty-xml':
+        if not _format or _format == 'pretty-xml':
             _format = 'xml'
 
         try:
@@ -141,7 +149,7 @@ class RDFParser(RDFProcessor):
         # exceptions are not cached, add them here.
         # PluginException indicates that an unknown format was passed.
         except (SyntaxError, xml.sax.SAXParseException,
-                rdflib.plugin.PluginException, TypeError), e:
+                rdflib.plugin.PluginException, TypeError) as e:
 
             raise RDFParserException(e)
 
@@ -273,6 +281,8 @@ class RDFSerializer(RDFProcessor):
 
         self.graph_from_dataset(dataset_dict)
 
+        if not _format:
+            _format = 'xml'
         _format = url_to_rdflib_format(_format)
 
         if _format == 'json-ld':
@@ -310,15 +320,81 @@ class RDFSerializer(RDFProcessor):
             for dataset_dict in dataset_dicts:
                 dataset_ref = self.graph_from_dataset(dataset_dict)
 
-                self.g.add((catalog_ref, DCAT.dataset, dataset_ref))
+                cat_ref = self._add_source_catalog(catalog_ref, dataset_dict, dataset_ref)
+                if not cat_ref:
+                    self.g.add((catalog_ref, DCAT.dataset, dataset_ref))
 
         if pagination_info:
             self._add_pagination_triples(pagination_info)
 
+        if not _format:
+            _format = 'xml'
         _format = url_to_rdflib_format(_format)
         output = self.g.serialize(format=_format)
 
         return output
+
+    def _add_source_catalog(self, root_catalog_ref, dataset_dict, dataset_ref):
+        if not p.toolkit.asbool(config.get(DCAT_EXPOSE_SUBCATALOGS, False)):
+            return
+
+        def _get_from_extra(key):
+            for ex in dataset_dict.get('extras', []):
+                if ex['key'] == key:
+                    return ex['value']
+
+        source_uri = _get_from_extra('source_catalog_homepage')
+        if not source_uri:
+            return
+
+        g = self.g
+        catalog_ref = URIRef(source_uri)
+
+        # we may have multiple subcatalogs, let's check if this one has been already added
+        if (root_catalog_ref, DCT.hasPart, catalog_ref) not in g:
+
+            g.add((root_catalog_ref, DCT.hasPart, catalog_ref))
+            g.add((catalog_ref, RDF.type, DCAT.Catalog))
+            g.add((catalog_ref, DCAT.dataset, dataset_ref))
+
+            sources = (('source_catalog_title', DCT.title, Literal,),
+                       ('source_catalog_description', DCT.description, Literal,),
+                       ('source_catalog_homepage', FOAF.homepage, URIRef,),
+                       ('source_catalog_language', DCT.language, Literal,),
+                       ('source_catalog_modified', DCT.modified, Literal,),)
+
+            # base catalog struct
+            for item in sources:
+                key, predicate, _type = item
+                value = _get_from_extra(key)
+                if value:
+                    g.add((catalog_ref, predicate, _type(value)))
+
+            publisher_sources = (
+                                 ('name', Literal, FOAF.name, True,),
+                                 ('email', Literal, FOAF.mbox, False,),
+                                 ('url', URIRef, FOAF.homepage,False,),
+                                 ('type', Literal, DCT.type, False,))
+
+            _pub = _get_from_extra('source_catalog_publisher')
+            if _pub:
+                pub = json.loads(_pub)
+
+                #pub_uri = URIRef(pub.get('uri'))
+
+                agent = BNode()
+                g.add((agent, RDF.type, FOAF.Agent))
+                g.add((catalog_ref, DCT.publisher, agent))
+
+                for src_key, _type, predicate, required in publisher_sources:
+                    val = pub.get(src_key)
+                    if val is None and required:
+                        raise ValueError("Value for %s (%s) is required" % (src_key, predicate))
+                    elif val is None:
+                        continue
+                    g.add((agent, predicate, _type(val)))
+
+        return catalog_ref
 
 
 if __name__ == '__main__':
@@ -349,9 +425,22 @@ Operation mode.
                         action='store_true',
                         help='Enable compatibility mode')
 
+    parser.add_argument('-s', '--subcatalogs', action='store_true', dest='subcatalogs',
+                        default=False,
+                        help="Enable subcatalogs handling (dct:hasPart support)")
     args = parser.parse_args()
 
     contents = args.file.read()
+
+    config.update({DCAT_EXPOSE_SUBCATALOGS: args.subcatalogs})
+
+    # Workaround until the core translation function defaults to the Flask one
+    from paste.registry import Registry
+    from ckan.lib.cli import MockTranslator
+    registry = Registry()
+    registry.prepare()
+    from pylons import translator
+    registry.register(translator, MockTranslator())
 
     if args.mode == 'produce':
         serializer = RDFSerializer(profiles=args.profile,
@@ -359,7 +448,7 @@ Operation mode.
 
         dataset = json.loads(contents)
         out = serializer.serialize_dataset(dataset, _format=args.format)
-        print out
+        print(out)
     else:
         parser = RDFParser(profiles=args.profile,
                            compatibility_mode=args.compat_mode)
@@ -369,4 +458,4 @@ Operation mode.
         ckan_datasets = [d for d in parser.datasets()]
 
         indent = 4 if args.pretty else None
-        print json.dumps(ckan_datasets, indent=indent)
+        print(json.dumps(ckan_datasets, indent=indent))

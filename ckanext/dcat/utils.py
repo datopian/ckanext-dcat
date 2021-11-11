@@ -1,12 +1,42 @@
+# -*- coding: utf-8 -*-
+
+from builtins import str
 import logging
 import uuid
+import simplejson as json
+import re
+import operator
 
-from pylons import config
+
+from ckantoolkit import config, h
+
+try:
+    # CKAN >= 2.6
+    from ckan.exceptions import HelperError
+except ImportError:
+    # CKAN < 2.6
+    class HelperError(Exception):
+        pass
 
 from ckan import model
+import ckan.plugins.toolkit as toolkit
+
+from ckanext.dcat.exceptions import RDFProfileException
+
+if toolkit.check_ckan_version(max_version='2.8.99'):
+    from ckan.controllers.package import PackageController
+    from ckan.controllers.home import HomeController
+    read_endpoint = PackageController().read
+    index_endpoint = HomeController().index
+else:
+    from ckan.views.home import index as index_endpoint
+    from ckan.views.dataset import read as read_endpoint
+
+_ = toolkit._
 
 log = logging.getLogger(__name__)
 
+DCAT_EXPOSE_SUBCATALOGS = 'ckanext.dcat.expose_subcatalogs'
 
 CONTENT_TYPES = {
     'rdf': 'application/rdf+xml',
@@ -16,6 +46,97 @@ CONTENT_TYPES = {
     'jsonld': 'application/ld+json',
 }
 
+DCAT_CLEAN_TAGS = 'ckanext.dcat.clean_tags'
+
+DEFAULT_CATALOG_ENDPOINT = '/catalog.{_format}'
+ENABLE_RDF_ENDPOINTS_CONFIG = 'ckanext.dcat.enable_rdf_endpoints'
+ENABLE_CONTENT_NEGOTIATION_CONFIG = 'ckanext.dcat.enable_content_negotiation'
+
+
+def _get_package_type(id):
+    """
+    Given the id of a package this method will return the type of the
+    package, or 'dataset' if no type is currently set
+    """
+    pkg = model.Package.get(id)
+    if pkg:
+        return pkg.type or u'dataset'
+    return None
+
+
+def field_labels():
+    '''
+    Returns a dict with the user friendly translatable field labels that
+    can be used in the frontend.
+    '''
+
+    return {
+        'uri': _('URI'),
+        'guid': _('GUID'),
+        'theme': _('Theme'),
+        'identifier': _('Identifier'),
+        'alternate_identifier': _('Alternate identifier'),
+        'issued': _('Issued'),
+        'modified': _('Modified'),
+        'version_notes': _('Version notes'),
+        'language': _('Language'),
+        'frequency': _('Frequency'),
+        'conforms_to': _('Conforms to'),
+        'spatial_uri': _('Spatial URI'),
+        'temporal_start': _('Start of temporal extent'),
+        'temporal_end': _('End of temporal extent'),
+        'publisher_uri': _('Publisher URI'),
+        'publisher_name': _('Publisher name'),
+        'publisher_email': _('Publisher email'),
+        'publisher_url': _('Publisher URL'),
+        'publisher_type': _('Publisher type'),
+        'contact_name': _('Contact name'),
+        'contact_email': _('Contact email'),
+        'contact_uri': _('Contact URI'),
+        'download_url': _('Download URL'),
+        'mimetype': _('Media type'),
+        'size': _('Size'),
+        'rights': _('Rights'),
+        'created': _('Created'),
+    }
+
+def helper_available(helper_name):
+    '''
+    Checks if a given helper name is available on `h`
+    '''
+    try:
+        getattr(h, helper_name)
+    except (AttributeError, HelperError):
+        return False
+    return True
+
+def structured_data(dataset_id, profiles=None, _format='jsonld'):
+    '''
+    Returns a string containing the structured data of the given
+    dataset id and using the given profiles (if no profiles are supplied
+    the default profiles are used).
+
+    This string can be used in the frontend.
+    '''
+    if not profiles:
+        profiles = ['schemaorg']
+
+    data = toolkit.get_action('dcat_dataset_show')(
+        {},
+        {
+            'id': dataset_id,
+            'profiles': profiles,
+            'format': _format,
+        }
+    )
+    # parse result again to prevent UnicodeDecodeError and add formatting
+    try:
+        json_data = json.loads(data)
+        return json.dumps(json_data, sort_keys=True,
+                          indent=4, separators=(',', ': '), cls=json.JSONEncoderForHTML)
+    except ValueError:
+        # result was not JSON, return anyway
+        return data
 
 def catalog_uri():
     '''
@@ -100,7 +221,8 @@ def resource_uri(resource_dict):
     The value will be the first found of:
 
         1. The value of the `uri` field
-        2. `catalog_uri()` + '/dataset/' + `package_id` + '/resource/' + `id` field
+        2. `catalog_uri()` + '/dataset/' + `package_id` + '/resource/'
+            + `id` field
 
     Check the documentation for `catalog_uri()` for the recommended ways of
     setting it.
@@ -119,18 +241,10 @@ def resource_uri(resource_dict):
     return uri
 
 
-def publisher_uri_from_dataset_dict(dataset_dict):
+def publisher_uri_organization_fallback(dataset_dict):
     '''
-    Returns an URI for a dataset's publisher
-
-    This will be used to uniquely reference the publisher on the RDF
-    serializations.
-
-    The value will be the first found of:
-
-        1. The value of the `publisher_uri` field
-        2. The value of an extra with key `publisher_uri`
-        3. `catalog_uri()` + '/organization/' + `organization id` field
+    Builds a fallback dataset URI of the form
+    `catalog_uri()` + '/organization/' + `organization id` field
 
     Check the documentation for `catalog_uri()` for the recommended ways of
     setting it.
@@ -138,19 +252,11 @@ def publisher_uri_from_dataset_dict(dataset_dict):
     Returns a string with the publisher URI, or None if no URI could be
     generated.
     '''
-
-    uri = dataset_dict.get('pubisher_uri')
-    if not uri:
-        for extra in dataset_dict.get('extras', []):
-            if extra['key'] == 'publisher_uri':
-                uri = extra['value']
-                break
-    if not uri and dataset_dict.get('organization'):
-        uri = '{0}/organization/{1}'.format(catalog_uri().rstrip('/'),
+    if dataset_dict.get('organization'):
+        return '{0}/organization/{1}'.format(catalog_uri().rstrip('/'),
                                             dataset_dict['organization']['id'])
 
-    return uri
-
+    return None
 
 def dataset_id_from_resource(resource_dict):
     '''
@@ -193,10 +299,10 @@ def rdflib_to_url_format(_format):
 
     return _format
 
-import re
-import operator
+
 # For parsing {name};q=x and {name} style fields from the accept header
 accept_re = re.compile("^(?P<ct>[^;]+)[ \t]*(;[ \t]*q=(?P<q>[0-9.]+)){0,1}$")
+
 
 def parse_accept_header(accept_header=''):
     '''
@@ -212,12 +318,16 @@ def parse_accept_header(accept_header=''):
     if accept_header is None:
         accept_header = ''
 
+    # For compatibility, use 'rdf' for application/rdf+xml
+    content_types = CONTENT_TYPES.copy()
+    content_types.pop('xml')
+
     accepted_media_types = dict((value, key)
                                 for key, value
-                                in CONTENT_TYPES.iteritems())
+                                in content_types.items())
 
     accepted_media_types_wildcard = {}
-    for media_type, _format in accepted_media_types.iteritems():
+    for media_type, _format in accepted_media_types.items():
         _type = media_type.split('/')[0]
         if _type not in accepted_media_types_wildcard:
             accepted_media_types_wildcard[_type] = _format
@@ -230,7 +340,7 @@ def parse_accept_header(accept_header=''):
             qscore = m.groups(0)[2] or 1.0
             acceptable[key] = float(qscore)
 
-    for media_type in sorted(acceptable.iteritems(),
+    for media_type in sorted(iter(acceptable.items()),
                              key=operator.itemgetter(1),
                              reverse=True):
 
@@ -246,3 +356,126 @@ def parse_accept_header(accept_header=''):
                 return accepted_media_types_wildcard[_type]
 
     return None
+
+
+def generate_static_json(output):
+    data_dict = {'page': 0}
+
+    output.write(u"[")
+
+    while True:
+        try:
+            data_dict['page'] = data_dict['page'] + 1
+            datasets = \
+                toolkit.get_action('dcat_datasets_list')({},
+                                                           data_dict)
+        except toolkit.ValidationError as e:
+            log.exception(e)
+            break
+
+        if not datasets:
+            break
+
+        for dataset in datasets:
+            output.write(json.dumps(dataset))
+
+    output.write(u"]")
+
+
+def check_access_header():
+    _format = None
+
+    # Check Accept headers
+    accept_header = toolkit.request.headers.get('Accept', '')
+    if accept_header:
+        _format = parse_accept_header(accept_header)
+    return _format
+
+
+def dcat_json_page():
+     data_dict = {
+         'page': toolkit.request.params.get('page'),
+         'modified_since': toolkit.request.params.get('modified_since'),
+     }
+
+     try:
+         datasets = toolkit.get_action('dcat_datasets_list')({},
+                                                             data_dict)
+     except toolkit.ValidationError as e:
+         return toolkit.abort(409, str(e))
+
+     return datasets
+
+
+def read_dataset_page(_id, _format):
+    if not _format:
+        _format = check_access_header()
+
+    if not _format:
+        if toolkit.check_ckan_version(max_version='2.8.99'):
+            return read_endpoint(_id)
+        else:
+            return read_endpoint(_get_package_type(_id), _id)
+
+    _profiles = toolkit.request.params.get('profiles')
+    if _profiles:
+        _profiles = _profiles.split(',')
+
+    try:
+        response = toolkit.get_action('dcat_dataset_show')({}, {'id': _id,
+            'format': _format, 'profiles': _profiles})
+    except toolkit.ObjectNotFound:
+        toolkit.abort(404)
+    except (toolkit.ValidationError, RDFProfileException) as e:
+        toolkit.abort(409, str(e))
+
+    if toolkit.check_ckan_version(max_version='2.8.99'):
+        toolkit.response.headers.update({'Content-type': CONTENT_TYPES[_format]})
+    else:
+        from flask import make_response
+        response = make_response(response)
+        response.headers['Content-type'] = CONTENT_TYPES[_format]
+
+    return response
+
+def read_catalog_page(_format):
+    if not _format:
+        _format = check_access_header()
+
+    if not _format:
+        return index_endpoint()
+
+    _profiles = toolkit.request.params.get('profiles')
+    if _profiles:
+        _profiles = _profiles.split(',')
+
+    data_dict = {
+        'page': toolkit.request.params.get('page'),
+        'modified_since': toolkit.request.params.get('modified_since'),
+        'q': toolkit.request.params.get('q'),
+        'fq': toolkit.request.params.get('fq'),
+        'format': _format,
+        'profiles': _profiles,
+    }
+
+    try:
+        response = toolkit.get_action('dcat_catalog_show')({}, data_dict)
+    except (toolkit.ValidationError, RDFProfileException) as e:
+        toolkit.abort(409, str(e))
+
+    if toolkit.check_ckan_version(max_version='2.8.99'):
+        toolkit.response.headers.update(
+            {'Content-type': CONTENT_TYPES[_format]})
+    else:
+        from flask import make_response
+        response = make_response(response)
+        response.headers['Content-type'] = CONTENT_TYPES[_format]
+
+    return response
+
+
+def get_endpoint(_type='dataset'):
+    if toolkit.check_ckan_version(min_version='2.9'):
+        return 'dcat.read_dataset' if _type == 'dataset' else 'dcat.read_catalog'
+    else:
+        return 'dcat_dataset' if _type == 'dataset' else 'dcat_catalog'

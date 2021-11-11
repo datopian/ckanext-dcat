@@ -1,7 +1,7 @@
 from __future__ import division
 import math
 
-from pylons import config
+from ckantoolkit import config
 from dateutil.parser import parse as dateutil_parse
 
 from ckan.plugins import toolkit
@@ -9,7 +9,7 @@ from ckan.plugins import toolkit
 import ckanext.dcat.converters as converters
 
 from ckanext.dcat.processors import RDFSerializer
-
+from ckanext.dcat.utils import catalog_uri
 
 DATASETS_PER_PAGE = 100
 
@@ -23,7 +23,7 @@ def dcat_dataset_show(context, data_dict):
 
     dataset_dict = toolkit.get_action('package_show')(context, data_dict)
 
-    serializer = RDFSerializer()
+    serializer = RDFSerializer(profiles=data_dict.get('profiles'))
 
     output = serializer.serialize_dataset(dataset_dict,
                                           _format=data_dict.get('format'))
@@ -40,7 +40,7 @@ def dcat_catalog_show(context, data_dict):
     dataset_dicts = query['results']
     pagination_info = _pagination_info(query, data_dict)
 
-    serializer = RDFSerializer()
+    serializer = RDFSerializer(profiles=data_dict.get('profiles'))
 
     output = serializer.serialize_catalog({}, dataset_dicts,
                                           _format=data_dict.get('format'),
@@ -59,7 +59,7 @@ def dcat_catalog_search(context, data_dict):
     dataset_dicts = query['results']
     pagination_info = _pagination_info(query, data_dict)
 
-    serializer = RDFSerializer()
+    serializer = RDFSerializer(profiles=data_dict.get('profiles'))
 
     output = serializer.serialize_catalog({}, dataset_dicts,
                                           _format=data_dict.get('format'),
@@ -144,18 +144,22 @@ def _pagination_info(query, data_dict):
 
     def _page_url(page):
 
-        params = [p for p in toolkit.request.params.iteritems()
-                  if p[0] != 'page']
+        base_url = catalog_uri()
+        base_url = '%s%s' % (
+            base_url, toolkit.request.path)
+
+        params = [p for p in toolkit.request.params.items()
+                  if p[0] != 'page' and p[0] in ('modified_since', 'profiles', 'q', 'fq')]
         if params:
             qs = '&'.join(['{0}={1}'.format(p[0], p[1]) for p in params])
             return '{0}?{1}&page={2}'.format(
-                toolkit.request.path_url,
+                base_url,
                 qs,
                 page
             )
         else:
             return '{0}?page={1}'.format(
-                toolkit.request.path_url,
+                base_url,
                 page
             )
 
