@@ -154,6 +154,7 @@ class DCATRDFHarvester(DCATHarvester):
         log.debug('In DCATRDFHarvester gather_stage')
 
         rdf_format = None
+        rdf_profile_config = None
         if harvest_job.source.config:
             rdf_format = json.loads(harvest_job.source.config).get("rdf_format")
             rdf_profile_config = json.loads(harvest_job.source.config).get("rdf_profile")
