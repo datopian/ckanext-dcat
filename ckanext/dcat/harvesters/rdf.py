@@ -6,7 +6,7 @@ import logging
 import hashlib
 import traceback
 
-import six
+import sqlalchemy as sa
 
 import ckan.plugins as p
 import ckan.model as model
@@ -16,13 +16,10 @@ from ckan.common import config
 import ckan.lib.plugins as lib_plugins
 
 from ckanext.harvest.model import HarvestObject, HarvestObjectExtra
-
+from ckanext.harvest.logic.schema import unicode_safe
 from ckanext.dcat.harvesters.base import DCATHarvester
-
 from ckanext.dcat.processors import RDFParserException, RDFParser
-
 from ckanext.dcat.interfaces import IDCATRDFHarvester
-
 
 log = logging.getLogger(__name__)
 
@@ -181,10 +178,7 @@ class DCATRDFHarvester(DCATHarvester):
 
             content_hash = hashlib.md5()
             if content:
-                if six.PY2:
-                    content_hash.update(content)
-                else:
-                    content_hash.update(content.encode('utf8'))
+                content_hash.update(content.encode('utf8'))
 
             if last_content_hash:
                 if content_hash.digest() == last_content_hash.digest():
@@ -292,9 +286,13 @@ class DCATRDFHarvester(DCATHarvester):
             context = {'model': model, 'session': model.Session,
                        'user': self._get_user_name(), 'ignore_auth': True}
 
-            p.toolkit.get_action('package_delete')(context, {'id': harvest_object.package_id})
-            log.info('Deleted package {0} with guid {1}'.format(harvest_object.package_id,
-                                                                harvest_object.guid))
+            try:
+                p.toolkit.get_action('package_delete')(context, {'id': harvest_object.package_id})
+                log.info('Deleted package {0} with guid {1}'.format(harvest_object.package_id,
+                                                                    harvest_object.guid))
+            except p.toolkit.ObjectNotFound:
+                log.info('Package {0} already deleted.'.format(harvest_object.package_id))
+
             return True
 
         if harvest_object.content is None:
@@ -391,7 +389,7 @@ class DCATRDFHarvester(DCATHarvester):
 
                 # We need to explicitly provide a package ID
                 dataset['id'] = str(uuid.uuid4())
-                package_schema['id'] = [str]
+                package_schema['id'] = [unicode_safe]
 
                 harvester_tmp_dict = {}
 
@@ -408,7 +406,9 @@ class DCATRDFHarvester(DCATHarvester):
                         # Defer constraints and flush so the dataset can be indexed with
                         # the harvest object id (on the after_show hook from the harvester
                         # plugin)
-                        model.Session.execute('SET CONSTRAINTS harvest_object_package_id_fkey DEFERRED')
+                        model.Session.execute(
+                            sa.text('SET CONSTRAINTS harvest_object_package_id_fkey DEFERRED')
+                        )
                         model.Session.flush()
 
                         p.toolkit.get_action('package_create')(context, dataset)

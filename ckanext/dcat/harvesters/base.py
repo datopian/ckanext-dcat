@@ -1,13 +1,14 @@
 import os
 import logging
 
-import six
 import requests
 import rdflib
 
 from ckan import plugins as p
 from ckan import model
 
+from ckantoolkit import config
+import ckan.plugins.toolkit as toolkit
 
 from ckanext.harvest.harvesters import HarvesterBase
 from ckanext.harvest.model import HarvestObject
@@ -20,8 +21,8 @@ log = logging.getLogger(__name__)
 
 class DCATHarvester(HarvesterBase):
 
-    MAX_FILE_SIZE = 1024 * 1024 * 50  # 50 Mb
-    CHUNK_SIZE = 1024
+    DEFAULT_MAX_FILE_SIZE_MB = 50
+    CHUNK_SIZE = 1024 * 512
 
     force_import = False
 
@@ -71,11 +72,12 @@ class DCATHarvester(HarvesterBase):
                 did_get = True
             r.raise_for_status()
 
+            max_file_size = 1024 * 1024 * toolkit.asint(config.get('ckanext.dcat.max_file_size', self.DEFAULT_MAX_FILE_SIZE_MB))
             cl = r.headers.get('content-length')
-            if cl and int(cl) > self.MAX_FILE_SIZE:
+            if cl and int(cl) > max_file_size:
                 msg = '''Remote file is too big. Allowed
                     file size: {allowed}, Content-Length: {actual}.'''.format(
-                    allowed=self.MAX_FILE_SIZE, actual=cl)
+                    allowed=max_file_size, actual=cl)
                 self._save_gather_error(msg, harvest_job)
                 return None, None
 
@@ -83,19 +85,18 @@ class DCATHarvester(HarvesterBase):
                 r = session.get(url, stream=True)
 
             length = 0
-            content = '' if six.PY2 else b''
+            content = b''
             for chunk in r.iter_content(chunk_size=self.CHUNK_SIZE):
                 content = content + chunk
 
                 length += len(chunk)
 
-                if length >= self.MAX_FILE_SIZE:
+                if length >= max_file_size:
                     self._save_gather_error('Remote file is too big.',
                                             harvest_job)
                     return None, None
 
-            if not six.PY2:
-                content = content.decode('utf-8')
+            content = content.decode('utf-8')
 
             if content_type is None and r.headers.get('content-type'):
                 content_type = r.headers.get('content-type').split(";", 1)[0]
@@ -158,13 +159,18 @@ class DCATHarvester(HarvesterBase):
         '''
         Returns a database result of datasets matching the given guid.
         '''
+        if toolkit.check_ckan_version(max_version="2.11"):
+            datasets = model.Session.query(model.Package.id) \
+                                    .join(model.PackageExtra) \
+                                    .filter(model.PackageExtra.key == 'guid') \
+                                    .filter(model.PackageExtra.value == guid) \
+                                    .filter(model.Package.state == 'active') \
+                                    .all()
+        else:
+            datasets = model.Session.query(model.Package.id) \
+                                    .filter(model.Package.extras['guid'] == f'"{guid}"') \
+                                    .all()
 
-        datasets = model.Session.query(model.Package.id) \
-                                .join(model.PackageExtra) \
-                                .filter(model.PackageExtra.key == 'guid') \
-                                .filter(model.PackageExtra.value == guid) \
-                                .filter(model.Package.state == 'active') \
-                                .all()
         return datasets
 
     def _get_existing_dataset(self, guid):
